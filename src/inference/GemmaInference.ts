@@ -14,10 +14,10 @@ export class GemmaInference {
   private static modelPath: string = '';
   private static isInitialized: boolean = false;
 
-  static async initialize(): Promise<void> {
+  static async initialize(modelPath: string): Promise<void> {
     try {
       // Model will be copied from assets to app's internal storage
-      this.modelPath = `${RNFS.DocumentDirectoryPath}/gemma3n.litertlm`;
+      this.modelPath = modelPath;
 
       console.log('Loading model from:', this.modelPath);
 
