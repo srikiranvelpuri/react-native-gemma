@@ -16,21 +16,22 @@ export class GemmaInference {
 
   static async initialize(modelPath: string): Promise<void> {
     try {
-      // Model will be copied from assets to app's internal storage
+      const fileExists = await RNFS.exists(modelPath);
+      if (!fileExists) {
+        throw new Error(`Model file not found at: ${modelPath}`);
+      }
+
       this.modelPath = modelPath;
+      console.log('Loading model from:', modelPath);
 
-      console.log('Loading model from:', this.modelPath);
-
-      // The native module will handle copying from assets if needed
-      const result = await GemmaModule.loadModel(this.modelPath);
+      await GemmaModule.loadModel(modelPath);
       this.isInitialized = true;
-      console.log('✅ Model loaded:', result);
-    } catch (error: any) {
-      console.error('❌ Model initialization failed:', error.message || error);
+      console.log('Model loaded successfully');
+    } catch (error) {
       this.isInitialized = false;
-      throw new Error(
-        `Failed to initialize Gemma model: ${error.message || error}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Model initialization failed:', message);
+      throw new Error(`Failed to initialize Gemma model: ${message}`);
     }
   }
 
@@ -38,57 +39,51 @@ export class GemmaInference {
     prompt: string,
     imagePath?: string | null,
   ): Promise<string> {
+    if (!this.isInitialized) {
+      throw new Error('Model not initialized. Call initialize() first.');
+    }
+
+    if (!prompt?.trim()) {
+      throw new Error('Prompt cannot be empty');
+    }
+
     try {
-      if (!this.isInitialized) {
-        throw new Error('Model not initialized. Call initialize() first.');
-      }
-
-      if (!prompt || prompt.trim().length === 0) {
-        throw new Error('Prompt cannot be empty');
-      }
-
       console.log(
-        '🤖 Generating response for:',
+        'Generating response for:',
         prompt.substring(0, 50) + '...',
       );
 
-      let response: string;
-      if (imagePath && imagePath.trim().length > 0) {
-        // Verify image exists
+      if (imagePath?.trim()) {
         const imageExists = await RNFS.exists(imagePath);
         if (!imageExists) {
-          throw new Error(`Image not found at path: ${imagePath}`);
+          throw new Error(`Image not found at: ${imagePath}`);
         }
-        console.log('IMAGE_PATH', imagePath);
-        const cleanPath = imagePath?.startsWith('file:///')
-          ? imagePath?.substring(7)
-          : imagePath;
-        console.log('CLEAN_IMAGE_PATH', cleanPath);
-        response = await GemmaModule.generateWithImage(prompt, cleanPath);
-      } else {
-        response = await GemmaModule.generate(prompt);
+
+        const cleanPath = this.normalizePath(imagePath);
+        return await GemmaModule.generateWithImage(prompt, cleanPath);
       }
 
-      console.log('✅ Response generated successfully');
-      return response;
-    } catch (error: any) {
-      const errorMessage = error.message || 'Unknown error occurred';
-      console.error('❌ Generation failed:', errorMessage);
-      throw new Error(`Generation failed: ${errorMessage}`);
+      return await GemmaModule.generate(prompt);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Generation failed:', message);
+      throw new Error(`Generation failed: ${message}`);
     }
   }
 
   static async unload(): Promise<void> {
+    if (!this.isInitialized) {
+      console.log('Model was not loaded');
+      return;
+    }
+
     try {
-      if (this.isInitialized) {
-        await GemmaModule.unloadModel();
-        this.isInitialized = false;
-        console.log('✅ Model unloaded successfully');
-      } else {
-        console.log('ℹ️ Model was not loaded');
-      }
-    } catch (error: any) {
-      console.error('❌ Failed to unload model:', error.message || error);
+      await GemmaModule.unloadModel();
+      this.isInitialized = false;
+      console.log('Model unloaded successfully');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Failed to unload model:', message);
       throw error;
     }
   }
@@ -99,5 +94,9 @@ export class GemmaInference {
 
   static getModelPath(): string {
     return this.modelPath;
+  }
+
+  private static normalizePath(path: string): string {
+    return path.startsWith('file:///') ? path.substring(7) : path;
   }
 }

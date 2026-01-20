@@ -8,100 +8,55 @@ import {
   Image,
   StyleSheet,
   ActivityIndicator,
-  Modal,
+  StatusBar,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import RNFS from 'react-native-fs';
 import { GemmaInference } from './src/inference/GemmaInference';
-
-interface Message {
-  id: string;
-  text: string;
-  sender: 'user' | 'ai';
-  image?: string;
-}
-
-interface Chat {
-  id: string;
-  title: string;
-  messages: Message[];
-}
-
-const MODEL_URL =
-  'https://huggingface.co/google/gemma-3n-E2B-it-litert-lm/resolve/main/gemma-3n-E2B-it-int4.litertlm?download=true';
-const MODEL_NAME = 'gemma3n.litertlm';
-
-const MODELS_PATH = `${RNFS.DocumentDirectoryPath}/models`;
-const MODEL_PATH = `${MODELS_PATH}/${MODEL_NAME}`;
-const AUTH = 'DGcJdsXFviAtKytYDLoaFvrmdUAyMYAHca';
+import { DownloadModal } from './src/components/DownloadModal';
+import {
+  MODEL_PATH,
+  checkModelExists,
+  downloadModel,
+  handleNetworkError,
+} from './src/utils/modelUtils';
+import {
+  Message,
+  loadMessages as loadStoredMessages,
+  saveMessages as saveStoredMessages,
+} from './src/utils/messageUtils';
+import { darkTheme } from './src/utils/theme';
 
 const cameraIcon = require('./assets/camera.png');
 
 const App = () => {
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [activeChat, setActiveChat] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [bytesWritten, setBytesWritten] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  const checkModelExists = async (): Promise<boolean> => {
-    try {
-      const exists = await RNFS.exists(MODEL_PATH);
-      console.log(`Model exists at ${MODEL_PATH}: ${exists}`);
-      return exists;
-    } catch (error) {
-      console.error('Error checking model:', error);
-      return false;
-    }
-  };
-
-  const downloadModel = async () => {
+  const handleDownload = async () => {
     setDownloading(true);
     setDownloadProgress(0);
+    setBytesWritten(0);
+    setTotalBytes(0);
     setDownloadError(null);
 
     try {
-      // Ensure directory exists
-      const dirExists = await RNFS.exists(MODELS_PATH);
-      if (!dirExists) {
-        console.log('📁 Creating models directory...');
-        await RNFS.mkdir(MODELS_PATH);
-      }
-
-      console.log('⬇️ Starting model download...');
-      const downloadResult = RNFS.downloadFile({
-        fromUrl: MODEL_URL,
-        toFile: MODEL_PATH,
-        headers: {
-          Authorization: `Bearer hf_${AUTH}`,
-        },
-        progress: res => {
-          const progress = (res.bytesWritten / res.contentLength) * 100;
-          setDownloadProgress(progress);
-          console.log(`Download progress: ${progress.toFixed(1)}%`);
-        },
-        progressDivider: 1,
+      await downloadModel(progress => {
+        setDownloadProgress(progress.progress);
+        setBytesWritten(progress.bytesWritten);
+        setTotalBytes(progress.totalBytes);
       });
-
-      const result = await downloadResult.promise;
-
-      if (result.statusCode === 200) {
-        console.log('✅ Model downloaded successfully');
-        setDownloading(false);
-        return true;
-      } else {
-        throw new Error(`Download failed with status: ${result.statusCode}`);
-      }
+      setDownloading(false);
+      return true;
     } catch (error) {
-      console.error('❌ Download error:', error);
-      const errorMessage =
-        error instanceof Error ? error.message : 'Download failed';
+      const errorMessage = handleNetworkError(error);
       setDownloadError(errorMessage);
       setDownloading(false);
       return false;
@@ -110,66 +65,45 @@ const App = () => {
 
   const initModel = useCallback(async () => {
     try {
-      console.log('🔄 Initializing model...');
+      console.log('Initializing model...');
       const modelExists = await checkModelExists();
 
       if (!modelExists) {
-        console.log('📥 Model not found, starting download...');
-        const downloaded = await downloadModel();
+        console.log('Model not found, starting download...');
+        const downloaded = await handleDownload();
         if (!downloaded) {
-          console.error('❌ Model download failed');
+          console.error('Model download failed');
           return;
         }
       }
 
       if (!MODEL_PATH) throw new Error('MODEL_PATH is null');
 
-      console.log('🚀 Loading model into inference engine...');
+      console.log('Loading model into inference engine...');
       await GemmaInference.initialize(MODEL_PATH);
       setModelReady(true);
-      console.log('✅ Model ready!');
+      console.log('Model ready!');
     } catch (error) {
-      console.error('❌ Model initialization failed:', error);
-      setDownloadError(
-        error instanceof Error ? error.message : 'Initialization failed',
-      );
+      console.error('Model initialization failed:', error);
+      const errorMessage = handleNetworkError(error);
+      setDownloadError(errorMessage);
+      setModelReady(false);
     }
   }, []);
 
-  const loadChats = useCallback(async () => {
-    try {
-      const stored = await AsyncStorage.getItem('chats');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setChats(parsed);
-        if (parsed.length > 0) setActiveChat(parsed[0].id);
-      }
-    } catch (error) {
-      console.error('Error loading chats:', error);
-    }
+  const loadMessages = useCallback(async () => {
+    const stored = await loadStoredMessages();
+    setMessages(stored);
   }, []);
+
+  const saveMessages = async (newMessages: Message[]) => {
+    await saveStoredMessages(newMessages);
+  };
 
   useEffect(() => {
-    loadChats();
+    loadMessages();
     initModel();
-  }, [initModel, loadChats]);
-
-  const saveChats = async (newChats: Chat[]) => {
-    await AsyncStorage.setItem('chats', JSON.stringify(newChats));
-    setChats(newChats);
-  };
-
-  const createNewChat = () => {
-    const newChat: Chat = {
-      id: Date.now().toString(),
-      title: 'New Chat',
-      messages: [],
-    };
-    const updated = [newChat, ...chats];
-    saveChats(updated);
-    setActiveChat(newChat.id);
-    setSidebarOpen(false);
-  };
+  }, [initModel, loadMessages]);
 
   const pickImage = () => {
     launchImageLibrary({ mediaType: 'photo' }, response => {
@@ -181,7 +115,7 @@ const App = () => {
 
   const sendMessage = async () => {
     if (!input.trim() && !selectedImage) return;
-    if (!activeChat || !modelReady) return;
+    if (!modelReady) return;
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -190,17 +124,10 @@ const App = () => {
       image: selectedImage || undefined,
     };
 
-    const updatedChats = chats.map(chat =>
-      chat.id === activeChat
-        ? {
-            ...chat,
-            messages: [...chat.messages, userMsg],
-            title: chat.messages.length === 0 ? input.slice(0, 30) : chat.title,
-          }
-        : chat,
-    );
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
+    await saveMessages(updatedMessages);
 
-    saveChats(updatedChats);
     setInput('');
     setSelectedImage(null);
     setLoading(true);
@@ -213,12 +140,9 @@ const App = () => {
         sender: 'ai',
       };
 
-      const finalChats = updatedChats.map(chat =>
-        chat.id === activeChat
-          ? { ...chat, messages: [...chat.messages, aiMsg] }
-          : chat,
-      );
-      saveChats(finalChats);
+      const finalMessages = [...updatedMessages, aiMsg];
+      setMessages(finalMessages);
+      await saveMessages(finalMessages);
     } catch (error) {
       console.error('Generation failed:', error);
     } finally {
@@ -231,101 +155,21 @@ const App = () => {
     initModel();
   };
 
-  const activeMessages = chats.find(c => c.id === activeChat)?.messages || [];
-
   return (
     <View style={styles.container}>
-      {/* Download Modal */}
-      <Modal
+      <StatusBar barStyle="light-content" backgroundColor={darkTheme.headerBackground} />
+      <DownloadModal
         visible={downloading || downloadError !== null}
-        transparent
-        animationType="fade"
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            {downloading ? (
-              <>
-                <Text style={styles.modalTitle}>Downloading Model</Text>
-                <Text style={styles.modalSubtitle}>
-                  Please wait until the AI model is downloaded...
-                </Text>
-                <View style={styles.progressContainer}>
-                  <View style={styles.progressBar}>
-                    <View
-                      style={[
-                        styles.progressFill,
-                        { width: `${downloadProgress}%` },
-                      ]}
-                    />
-                  </View>
-                  <Text style={styles.progressText}>
-                    {downloadProgress.toFixed(1)}%
-                  </Text>
-                </View>
-                <ActivityIndicator
-                  size="large"
-                  color="#007AFF"
-                  style={styles.spinner}
-                />
-              </>
-            ) : (
-              <>
-                <Text style={styles.modalTitle}>Download Failed</Text>
-                <Text style={styles.errorText}>{downloadError}</Text>
-                <TouchableOpacity
-                  style={styles.retryBtn}
-                  onPress={retryDownload}
-                >
-                  <Text style={styles.retryText}>Retry Download</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={sidebarOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSidebarOpen(false)}
-      >
-        <TouchableOpacity
-          style={styles.sidebarOverlay}
-          activeOpacity={1}
-          onPressOut={() => setSidebarOpen(false)}
-        >
-          <View style={styles.sidebarModal}>
-            <TouchableOpacity style={styles.newChatBtn} onPress={createNewChat}>
-              <Text style={styles.newChatText}>+ New Chat</Text>
-            </TouchableOpacity>
-            <FlatList
-              data={chats}
-              keyExtractor={item => item.id}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.chatItem,
-                    activeChat === item.id && styles.activeChatItem,
-                  ]}
-                  onPress={() => {
-                    setActiveChat(item.id);
-                    setSidebarOpen(false);
-                  }}
-                >
-                  <Text style={styles.chatTitle}>{item.title}</Text>
-                </TouchableOpacity>
-              )}
-            />
-          </View>
-        </TouchableOpacity>
-      </Modal>
+        downloading={downloading}
+        downloadProgress={downloadProgress}
+        bytesWritten={bytesWritten}
+        totalBytes={totalBytes}
+        downloadError={downloadError}
+        onRetry={retryDownload}
+      />
 
       <View style={styles.main}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => setSidebarOpen(!sidebarOpen)}>
-            <Text style={styles.menuIcon}>☰</Text>
-          </TouchableOpacity>
           <Text style={styles.headerTitle}>LAI - Gemma 3N E2B</Text>
           {!modelReady && !downloading && (
             <Text style={styles.statusBadge}>Initializing...</Text>
@@ -333,7 +177,7 @@ const App = () => {
         </View>
 
         <FlatList
-          data={activeMessages}
+          data={messages}
           keyExtractor={item => item.id}
           renderItem={({ item }) => (
             <View
@@ -357,14 +201,14 @@ const App = () => {
           contentContainerStyle={styles.messageList}
         />
 
-        {loading && <ActivityIndicator size="large" color="#007AFF" />}
+        {loading && <ActivityIndicator size="large" color={darkTheme.primary} />}
 
         <View style={styles.inputContainer}>
           {selectedImage && (
             <View style={styles.previewContainer}>
               <Image source={{ uri: selectedImage }} style={styles.preview} />
               <TouchableOpacity onPress={() => setSelectedImage(null)}>
-                <Text style={styles.removeImg}>✕</Text>
+                <Text style={styles.removeImg}>X</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -374,6 +218,7 @@ const App = () => {
               value={input}
               onChangeText={setInput}
               placeholder="Message Gemma..."
+              placeholderTextColor={darkTheme.textPlaceholder}
               multiline
               editable={modelReady}
             />
@@ -402,126 +247,131 @@ const App = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  main: { flex: 1, backgroundColor: '#fff' },
-  menuIcon: { fontSize: 24, marginRight: 15 },
+  container: {
+    flex: 1,
+    backgroundColor: darkTheme.background,
+  },
+  main: {
+    flex: 1,
+    backgroundColor: darkTheme.background,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 15,
+    paddingTop: 50,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: darkTheme.border,
+    backgroundColor: darkTheme.headerBackground,
   },
-  headerTitle: { fontSize: 18, fontWeight: '600', flex: 1 },
-  statusBadge: { fontSize: 12, color: '#007AFF', fontWeight: '500' },
-  messageList: { padding: 15 },
-  message: { maxWidth: '80%', padding: 12, borderRadius: 12, marginBottom: 10 },
-  userMsg: { alignSelf: 'flex-end', backgroundColor: '#007AFF' },
-  aiMsg: { alignSelf: 'flex-start', backgroundColor: '#f0f0f0' },
-  msgText: { fontSize: 15, color: '#000' },
-  userText: { fontSize: 15, color: '#fff' },
-  msgImage: { width: 200, height: 200, borderRadius: 8, marginBottom: 8 },
-  inputContainer: { borderTopWidth: 1, borderTopColor: '#eee', padding: 10 },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    flex: 1,
+    color: darkTheme.textPrimary,
+  },
+  statusBadge: {
+    fontSize: 12,
+    color: darkTheme.statusText,
+    fontWeight: '500',
+  },
+  messageList: {
+    padding: 15,
+    paddingBottom: 20,
+  },
+  message: {
+    maxWidth: '85%',
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  userMsg: {
+    alignSelf: 'flex-end',
+    backgroundColor: darkTheme.userMessage,
+  },
+  aiMsg: {
+    alignSelf: 'flex-start',
+    backgroundColor: darkTheme.aiMessage,
+  },
+  msgText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: darkTheme.textPrimary,
+  },
+  userText: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: darkTheme.textPrimary,
+  },
+  msgImage: {
+    width: 200,
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  inputContainer: {
+    borderTopWidth: 1,
+    borderTopColor: darkTheme.border,
+    padding: 12,
+    paddingBottom: 20,
+    backgroundColor: darkTheme.background,
+  },
   previewContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 8,
   },
-  preview: { width: 60, height: 60, borderRadius: 8, marginRight: 8 },
-  removeImg: { fontSize: 20, color: '#ff3b30' },
-  inputRow: { flexDirection: 'row', alignItems: 'center' },
+  preview: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    marginRight: 8,
+  },
+  removeImg: {
+    fontSize: 20,
+    color: darkTheme.danger,
+    fontWeight: '600',
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   input: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    marginHorizontal: 8,
-    maxHeight: 100,
+    borderColor: darkTheme.inputBorder,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    maxHeight: 120,
+    backgroundColor: darkTheme.inputBackground,
+    color: darkTheme.textPrimary,
+    fontSize: 15,
   },
-  iconBtn: { padding: 8 },
-  icon: { width: 24, height: 24 },
+  iconBtn: {
+    padding: 8,
+    borderRadius: 8,
+  },
+  icon: {
+    width: 24,
+    height: 24,
+    tintColor: darkTheme.textSecondary,
+  },
   sendBtn: {
-    backgroundColor: '#007AFF',
+    backgroundColor: darkTheme.primary,
     paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  sendBtnDisabled: { backgroundColor: '#ccc' },
-  sendText: { color: '#fff', fontWeight: '600' },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    width: '85%',
-    maxWidth: 400,
-    alignItems: 'center',
-  },
-  modalTitle: { fontSize: 20, fontWeight: '700', marginBottom: 8 },
-  modalSubtitle: {
-    fontSize: 14,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  progressContainer: { width: '100%', marginBottom: 20 },
-  progressBar: {
-    width: '100%',
-    height: 8,
-    backgroundColor: '#e0e0e0',
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressFill: { height: '100%', backgroundColor: '#007AFF', borderRadius: 4 },
-  progressText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#007AFF',
-    textAlign: 'center',
-  },
-  spinner: { marginTop: 10 },
-  errorText: {
-    fontSize: 14,
-    color: '#ff3b30',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  retryBtn: {
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 30,
     paddingVertical: 12,
     borderRadius: 8,
   },
-  retryText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  sidebarOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    flexDirection: 'row',
+  sendBtnDisabled: {
+    backgroundColor: darkTheme.disabled,
   },
-  sidebarModal: {
-    width: 250,
-    backgroundColor: '#1a1a1a',
-    padding: 10,
-    height: '100%',
+  sendText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 15,
   },
-  newChatBtn: {
-    backgroundColor: '#2a2a2a',
-    padding: 15,
-    borderRadius: 8,
-    marginBottom: 10,
-  },
-  newChatText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  chatItem: { padding: 12, borderRadius: 6, marginBottom: 4 },
-  activeChatItem: { backgroundColor: '#2a2a2a' },
-  chatTitle: { color: '#ddd', fontSize: 14 },
 });
 
 export default App;
